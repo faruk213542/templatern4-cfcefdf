@@ -1,0 +1,21 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: "reactnative4"
+  description: "Template React Native"
+  links:
+    - url: https://reactnative4-testreactnative-dev.empcbr.thoughtworks-labs.net
+      title: reactnative4
+      icon: dashboard
+  annotations:
+    circleci.com/project-slug: github/platform-dx/templatern4-cfcefdf
+    backstage.io/techdocs-ref: dir:.
+    github.com/project-slug:  platform-dx/templatern4-cfcefdf
+    sonarqube.org/project-key: "reactnative4"
+    backstage.io/kubernetes-label-selector: "app=reactnative4"
+    backstage.io/adr-location: docs/adrs/
+
+spec:
+  type: website
+  lifecycle: experimental
+  owner: "demodx"

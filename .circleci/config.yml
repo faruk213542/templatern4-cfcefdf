@@ -1,0 +1,160 @@
+---
+version: 2.1
+orbs:
+  aws-cli: circleci/aws-cli@3.0.0
+parameters:
+  prospect:
+    type: string
+    default: "testreactnative-dev"
+  project:
+    type: string
+    default: "templatern4"
+  api:
+    type: string
+    default: "reactnative4"
+  region:
+    type: string
+    default: "us-east-1"
+  instance_id:
+    type: string
+    default: "i-08d21631f752e65f6"
+jobs:
+  quality:
+    working_directory: /tmp/project
+    docker:
+      - image: sonarsource/sonar-scanner-cli
+    steps:
+      - checkout
+      - run:
+          command:
+            sonar-scanner -Dsonar.login=$SONAR_LOGIN_DEV -Dsonar.host.url=http://sonar-dev.empcbr.thoughtworks-labs.net
+  build:
+    working_directory: /tmp/project
+    docker:
+      - image: circleci/node:16-browsers
+    steps:
+      - attach_workspace:
+          at: /tmp/project
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "package-lock.json" }}
+            - v1-dependencies-
+      - run:
+          name: Install dependencies
+          command: yarn install
+      - save_cache:
+          key: v1-dependencies-{{ checksum "package-lock.json" }}
+          paths:
+            - node_modules
+      - persist_to_workspace:
+          root: /tmp/project
+          paths:
+            - .
+  tests:
+    working_directory: /tmp/project
+    docker:
+      - image: node:16
+    steps:
+      - attach_workspace:
+          at: /tmp/project
+      - run:
+          command: |
+            yarn test --watchAll=false --coverage
+      - persist_to_workspace:
+          root: /tmp/project
+          paths:
+            - .
+  create-docker-image:
+    docker:
+      - image: circleci/python:3.9
+    steps:
+      - attach_workspace:
+          at: /tmp/project
+      - checkout
+      - run:
+          command: |
+            pip3.9 install awscli
+      - setup_remote_docker:
+          version: 20.10.11
+          docker_layer_caching: true
+      - run:
+          command: >
+            aws ecr get-login-password --region us-east-1 | docker login --username
+            AWS --password-stdin 626109959667.dkr.ecr.us-east-1.amazonaws.com
+
+            SHORT_SHA1=$(echo $CIRCLE_SHA1 | cut -c -7)
+
+            docker image build . --tag << pipeline.parameters.api >>:${SHORT_SHA1}
+
+            docker tag << pipeline.parameters.api >>:${SHORT_SHA1} 626109959667.dkr.ecr.us-east-1.amazonaws.com/<< pipeline.parameters.api >>:${SHORT_SHA1}
+
+            docker tag << pipeline.parameters.api >>:${SHORT_SHA1} 626109959667.dkr.ecr.us-east-1.amazonaws.com/<< pipeline.parameters.api >>:latest
+
+            docker push 626109959667.dkr.ecr.us-east-1.amazonaws.com/<< pipeline.parameters.api >>:${SHORT_SHA1}
+
+            docker push 626109959667.dkr.ecr.us-east-1.amazonaws.com/<< pipeline.parameters.api >>:latest
+  create-android-apk:
+    docker:
+      - image: << pipeline.parameters.api >>:${SHORT_SHA1}
+    steps:
+      - run:
+          command: |
+            cd android && ./gradlew assembleRelease
+  deploy:
+    working_directory: /tmp/project
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - attach_workspace:
+          at: /tmp/project
+      - checkout
+      - aws-cli/setup
+      - run:
+          command: >
+            SHORT_SHA1=$(echo $CIRCLE_SHA1 | cut -c -7)
+
+            sed 's|{image-tag}|'$SHORT_SHA1'|g' k8s/deploy.yml > deploy.yml
+
+            FILE_VALUE=$(cat deploy.yml | base64 -w 0)
+
+            echo "{ \"Parameters\": { \"commands\": [ \"#!/bin/bash\", \"echo $FILE_VALUE | base64 -d > /tmp/file.yml\", \"runuser ubuntu -c 'kubectl apply -f /tmp/file.yml'\"]}}" > parameters.json
+
+            aws ssm send-command --document-name "AWS-RunShellScript" --instance-ids "<< pipeline.parameters.instance_id >>" --region "<< pipeline.parameters.region>>" --cli-input-json file://parameters.json
+workflows:
+  build_and_deploy:
+    jobs:
+      - build:
+        filters:
+          branches:
+            only:
+              - main
+      - tests:
+          requires:
+            - build
+      - quality:
+          context:
+            - Demo-DX
+          requires:
+            - tests
+      - create-docker-image:
+          filters:
+            branches:
+              only:
+                - main
+          context:
+            - Demo-DX
+          requires:
+            - tests
+      - create-android-apk:
+          requires:
+            - create-docker-image
+      - deploy:
+          filters:
+            branches:
+              only:
+                - main
+          context:
+            - Demo-DX
+          requires:
+            - create-android-apk
